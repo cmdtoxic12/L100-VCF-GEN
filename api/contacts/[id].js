@@ -1,62 +1,67 @@
 import { getSQL } from '../_db.js'
+import { requireAdmin } from '../_auth.js'
+import {
+  cleanText,
+  describeUniqueViolation,
+  methodNotAllowed,
+  parseBody,
+  sendError,
+  sendServerError,
+} from '../_http.js'
+import { normalizePhone } from '../_phone.js'
 
-function normalizePhone(phone) {
-  return String(phone || '')
-    .trim()
-    .replace(/\s+/g, '')
-    .replace(/^\+233/, '0')
-}
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'PUT, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-  if (req.method === 'OPTIONS') return res.status(200).end()
+  res.setHeader('Cache-Control', 'no-store')
 
-  if (req.method !== 'PUT') {
-    return res.status(405).json({ error: 'Method not allowed' })
+  if (req.method !== 'PUT' && req.method !== 'DELETE') {
+    return methodNotAllowed(res, ['PUT', 'DELETE'])
+  }
+
+  if (!requireAdmin(req, res)) return
+
+  const id = String(req.query?.id ?? '')
+  if (!UUID_PATTERN.test(id)) return sendError(res, 400, 'Invalid contact id.')
+
+  if (req.method === 'DELETE') {
+    try {
+      const deleted = await getSQL()`
+        DELETE FROM contacts
+         WHERE id = ${id}::uuid
+         RETURNING id
+      `
+      if (!deleted[0]) return sendError(res, 404, 'Contact not found.')
+      return res.status(200).json({ ok: true, id: deleted[0].id })
+    } catch (err) {
+      return sendServerError(res, err)
+    }
+  }
+
+  const body = parseBody(req)
+  if (!body) return sendError(res, 400, 'Invalid request body.')
+
+  const name = cleanText(body.full_name, { min: 2, max: 100 })
+  if (!name) return sendError(res, 400, 'Enter a full name (2 to 100 characters).')
+
+  const phone = normalizePhone(body.whatsapp)
+  if (!phone) {
+    return sendError(res, 400, 'Enter a valid Ghana mobile number, for example 0244 123 456.')
   }
 
   try {
-    const sql = getSQL()
-    const { id } = req.query
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
-    const name = String(body.full_name || '').trim()
-    const phone = normalizePhone(body.whatsapp)
-
-    if (!id || !name || !phone) {
-      return res.status(400).json({ error: 'id, full_name and whatsapp are required.' })
-    }
-
-    // Optional: block update if new phone/name collides with someone else
-    const phoneClash = await sql`
-      SELECT id FROM contacts WHERE whatsapp = ${phone} AND id != ${id}::uuid LIMIT 1
-    `
-    if (phoneClash[0]) {
-      return res.status(409).json({ error: 'This WhatsApp number is already used by another contact.' })
-    }
-
-    const nameClash = await sql`
-      SELECT id FROM contacts WHERE lower(full_name) = lower(${name}) AND id != ${id}::uuid LIMIT 1
-    `
-    if (nameClash[0]) {
-      return res.status(409).json({ error: 'This name is already used by another contact.' })
-    }
-
-    const updated = await sql`
+    const updated = await getSQL()`
       UPDATE contacts
-      SET full_name = ${name}, whatsapp = ${phone}
-      WHERE id = ${id}::uuid
-      RETURNING id, full_name, whatsapp, level, created_at
+         SET full_name = ${name}, whatsapp = ${phone}
+       WHERE id = ${id}::uuid
+       RETURNING id, full_name, whatsapp, level, created_at
     `
 
-    if (!updated[0]) {
-      return res.status(404).json({ error: 'Contact not found' })
-    }
-
+    if (!updated[0]) return sendError(res, 404, 'Contact not found.')
     return res.status(200).json(updated[0])
   } catch (err) {
-    console.error(err)
-    return res.status(500).json({ error: err.message || 'Server error' })
+    if (err?.code === '23505') return sendError(res, 409, describeUniqueViolation(err))
+    return sendServerError(res, err)
   }
 }

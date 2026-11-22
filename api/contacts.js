@@ -1,80 +1,132 @@
 import { getSQL } from './_db.js'
+import { requireAdmin } from './_auth.js'
+import {
+  cleanText,
+  clientKey,
+  describeUniqueViolation,
+  methodNotAllowed,
+  parseBody,
+  sendError,
+  sendServerError,
+} from './_http.js'
+import { normalizePhone } from './_phone.js'
+import { rateLimit } from './_rate-limit.js'
 
-function normalizePhone(phone) {
-  return String(phone || '')
-    .trim()
-    .replace(/\s+/g, '')
-    .replace(/^\+233/, '0')
+const DEFAULT_LIMIT = 25
+const MAX_LIMIT = 100
+
+function intParam(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ''), 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(Math.max(parsed, min), max)
+}
+
+function likePattern(value) {
+  return `%${value.replace(/[\\%_]/g, (match) => `\\${match}`)}%`
 }
 
 export default async function handler(req, res) {
-  // CORS for local/dev
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-  if (req.method === 'OPTIONS') return res.status(200).end()
+  res.setHeader('Cache-Control', 'no-store')
 
-  try {
-    const sql = getSQL()
+  // GET — admin-only, paginated list with optional server-side search.
+  if (req.method === 'GET') {
+    if (!requireAdmin(req, res)) return
 
-    // ── GET: last 10 contacts ──
-    if (req.method === 'GET') {
-      const rows = await sql`
-        SELECT id, full_name, whatsapp, level, created_at
-        FROM contacts
-        ORDER BY created_at DESC
-        LIMIT 10
-      `
-      return res.status(200).json(rows)
+    try {
+      const sql = getSQL()
+      const limit = intParam(req.query?.limit, DEFAULT_LIMIT, 1, MAX_LIMIT)
+      const offset = intParam(req.query?.offset, 0, 0, 100_000)
+      // Truncate first so an oversized query is not rejected outright.
+      const query =
+        cleanText(String(req.query?.q ?? '').slice(0, 80), { min: 0, max: 80 }) ?? ''
+      const digits = query.replace(/\D/g, '')
+
+      const params = []
+      const clauses = []
+
+      if (query) {
+        params.push(likePattern(query))
+        clauses.push(`full_name ILIKE $${params.length} ESCAPE '\\'`)
+
+        if (digits) {
+          params.push(`%${digits}%`)
+          clauses.push(`whatsapp LIKE $${params.length}`)
+        }
+      }
+
+      const where = clauses.length ? `WHERE ${clauses.join(' OR ')}` : ''
+
+      const rows = await sql.query(
+        `SELECT id, full_name, whatsapp, level, created_at
+           FROM contacts
+           ${where}
+          ORDER BY created_at DESC, id DESC
+          LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset],
+      )
+
+      const counted = await sql.query(
+        `SELECT count(*)::int AS total FROM contacts ${where}`,
+        params,
+      )
+      const total = counted[0]?.total ?? 0
+
+      return res.status(200).json({ rows, total, limit, offset })
+    } catch (err) {
+      return sendServerError(res, err)
+    }
+  }
+
+  // POST — public registration form.
+  if (req.method === 'POST') {
+    if (!rateLimit(`create:${clientKey(req)}`, 8, 60_000)) {
+      return sendError(
+        res,
+        429,
+        'Too many submissions just now. Please wait a minute and try again.',
+      )
     }
 
-    // ── POST: create with duplicate check ──
-    if (req.method === 'POST') {
-      const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body
-      const name = String(body.full_name || '').trim()
-      const phone = normalizePhone(body.whatsapp)
+    const body = parseBody(req)
+    if (!body) return sendError(res, 400, 'Invalid request body.')
 
-      if (!name || !phone) {
-        return res.status(400).json({ error: 'Full name and WhatsApp number are required.' })
-      }
+    // Honeypot: bots fill hidden fields. Accept silently, store nothing.
+    if (String(body.website ?? '').trim()) return res.status(201).json({ ok: true })
 
-      // Duplicate checks
-      const byPhone = await sql`
-        SELECT id, full_name, whatsapp FROM contacts WHERE whatsapp = ${phone} LIMIT 1
-      `
-      const byName = await sql`
-        SELECT id, full_name, whatsapp FROM contacts WHERE lower(full_name) = lower(${name}) LIMIT 1
-      `
+    const name = cleanText(body.full_name, { min: 2, max: 100 })
+    if (!name) return sendError(res, 400, 'Enter your full name (2 to 100 characters).')
 
-      const phoneMatch = byPhone[0]
-      const nameMatch = byName[0]
+    const phone = normalizePhone(body.whatsapp)
+    if (!phone) {
+      return sendError(res, 400, 'Enter a valid Ghana mobile number, for example 0244 123 456.')
+    }
 
-      if (phoneMatch && nameMatch && phoneMatch.id === nameMatch.id) {
-        return res.status(409).json({ error: 'This name and number are already registered.' })
-      }
-      if (phoneMatch) {
-        return res.status(409).json({
-          error: `This WhatsApp number is already registered under "${phoneMatch.full_name}".`,
-        })
-      }
-      if (nameMatch) {
-        return res.status(409).json({
-          error: `The name "${name}" is already registered with a different number.`,
-        })
-      }
+    try {
+      const sql = getSQL()
 
+      // No SELECT-then-INSERT: the unique index is the source of truth, so two
+      // simultaneous submissions cannot both slip through.
       const inserted = await sql`
         INSERT INTO contacts (full_name, whatsapp, level)
         VALUES (${name}, ${phone}, 'L100')
         RETURNING id, full_name, whatsapp, level, created_at
       `
 
-      return res.status(201).json(inserted[0])
-    }
+      const row = inserted[0]
+      const sameName = await sql`
+        SELECT 1
+          FROM contacts
+         WHERE lower(full_name) = lower(${name})
+           AND id <> ${row.id}::uuid
+         LIMIT 1
+      `
 
-    return res.status(405).json({ error: 'Method not allowed' })
-  } catch (err) {
-    console.error(err)
-    return res.status(500).json({ error: err.message || 'Server error' })
+      return res.status(201).json({ ...row, nameWarning: sameName.length > 0 })
+    } catch (err) {
+      if (err?.code === '23505') return sendError(res, 409, describeUniqueViolation(err))
+      return sendServerError(res, err)
+    }
   }
+
+  return methodNotAllowed(res, ['GET', 'POST'])
 }
