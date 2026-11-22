@@ -1,52 +1,70 @@
 # L100 Contacts
 
-Professional contact collection form for College Level 100 students.  
-React + Vite + Tailwind + Supabase · Admin dashboard · VCF export · Duplicate protection.
+Professional contact collection for College Level 100 students.  
+**React + Vite + Tailwind + Neon (Postgres) + Vercel API routes**
 
 ## Features
 
-- **Duplicate protection**: Blocks registration if the same name *or* WhatsApp number already exists
-- **Public Form**: Full Name · WhatsApp Number · Level locked to L100
-- **Supabase storage**: All submissions saved to a `contacts` table
-- **Admin Dashboard** (password protected):
-  - View last 10 entries
-  - Inline edit of name & number
-  - Download `.vcf` (only admin can do this)
-- VCF content: `Full Name` + `L100 · number`
+- **Duplicate protection** – blocks same name *or* WhatsApp number
+- **Public form** – Full Name · WhatsApp · Level locked to L100
+- **Neon Postgres** – data stored securely (connection string never exposed to browser)
+- **Admin dashboard** (password) – last 10 entries · inline edit · VCF download only for admin
+- VCF content: Full Name + `L100 · number`
 
 ---
 
-## Deploy to Vercel (recommended)
+## Neon setup (one-time)
+
+1. Create a free project at [neon.tech](https://neon.tech)
+2. Open **SQL Editor** and run:
+
+```sql
+CREATE TABLE contacts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  full_name TEXT NOT NULL,
+  whatsapp TEXT NOT NULL,
+  level TEXT NOT NULL DEFAULT 'L100',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE UNIQUE INDEX contacts_whatsapp_unique ON contacts (whatsapp);
+CREATE UNIQUE INDEX contacts_fullname_unique ON contacts (lower(full_name));
+```
+
+3. Copy the **connection string**  
+   Neon Console → Project → Connection Details →  
+   `postgresql://...@ep-xxx...neon.tech/neondb?sslmode=require`
+
+---
+
+## Deploy to Vercel
 
 ### 1. Push to GitHub
 ```bash
 cd l100-contacts
 git init
 git add .
-git commit -m "L100 Contacts app"
-# Create a new repo on GitHub, then:
+git commit -m "L100 Contacts with Neon"
 git remote add origin https://github.com/YOUR_USERNAME/l100-contacts.git
+git branch -M main
 git push -u origin main
 ```
 
 ### 2. Import on Vercel
-1. Go to [vercel.com](https://vercel.com) → **Add New Project**
-2. Import the GitHub repository
-3. Framework Preset: **Vite** (auto-detected)
-4. Add Environment Variables:
+1. [vercel.com/new](https://vercel.com/new) → Import repo
+2. Framework: **Vite**
+3. **Environment Variable** (server-side only):
 
 | Name | Value |
 |------|-------|
-| `VITE_SUPABASE_URL` | `https://xxxx.supabase.co` |
-| `VITE_SUPABASE_ANON_KEY` | your anon public key |
+| `DATABASE_URL` | your Neon connection string |
 
-5. Click **Deploy**
+4. Deploy
 
-Your site will be live at `https://l100-contacts-xxx.vercel.app`
-
-### 3. Admin route
-After deploy, open: `https://your-app.vercel.app/admin`  
-Default password: **`l100admin`** (change it in `src/pages/Admin.jsx`)
+### 3. Open the app
+- Form: `https://your-app.vercel.app`
+- Admin: `https://your-app.vercel.app/admin`  
+  Password: **`l100admin`** (change in `src/pages/Admin.jsx`)
 
 ---
 
@@ -55,45 +73,16 @@ Default password: **`l100admin`** (change it in `src/pages/Admin.jsx`)
 ```bash
 npm install
 cp .env.example .env
-# edit .env with your Supabase keys
+# put DATABASE_URL in .env
+
+# Option A – full stack (API + frontend)
+npx vercel dev
+
+# Option B – frontend only (API calls will fail until you use vercel dev)
 npm run dev
 ```
 
----
-
-## Supabase setup (one-time)
-
-1. Create a project at [supabase.com](https://supabase.com)
-2. Go to **SQL Editor** and run:
-
-```sql
-create table contacts (
-  id uuid default gen_random_uuid() primary key,
-  full_name text not null,
-  whatsapp text not null,
-  level text not null default 'L100',
-  created_at timestamptz default now()
-);
-
-alter table contacts enable row level security;
-
-create policy "Anyone can insert" on contacts for insert with check (true);
-create policy "Anyone can read"   on contacts for select using (true);
-create policy "Anyone can update" on contacts for update using (true);
-
--- Optional but recommended: unique constraints
-create unique index contacts_whatsapp_unique on contacts (whatsapp);
-create unique index contacts_fullname_unique on contacts (lower(full_name));
-```
-
-3. Copy **Project URL** and **anon public** key into `.env` / Vercel env vars
-
----
-
-## Admin Password
-
-Default: `l100admin`  
-Change it in `src/pages/Admin.jsx` → `ADMIN_PASSWORD`
+> API routes live in `/api` and only run under `vercel dev` or on Vercel.
 
 ---
 
@@ -101,16 +90,20 @@ Change it in `src/pages/Admin.jsx` → `ADMIN_PASSWORD`
 
 ```
 l100-contacts/
-├── public-demo.html     ← instant demo (no build needed)
+├── api/
+│   ├── _db.js              ← Neon connection helper
+│   ├── contacts.js         ← GET list + POST create (+ duplicate check)
+│   └── contacts/[id].js    ← PUT update
 ├── src/
 │   ├── pages/
-│   │   ├── Home.jsx     ← public form + duplicate check
-│   │   └── Admin.jsx    ← dashboard + VCF download
-│   ├── components/
-│   │   └── Layout.jsx
-│   └── lib/
-│       ├── supabase.js
-│       └── vcf.js
-├── vercel.json          ← SPA routing for /admin
-└── .env.example
+│   │   ├── Home.jsx
+│   │   └── Admin.jsx
+│   └── lib/vcf.js
+├── vercel.json
+└── .env.example            ← DATABASE_URL only
 ```
+
+## Admin password
+
+Default: `l100admin`  
+Edit: `src/pages/Admin.jsx` → `ADMIN_PASSWORD`

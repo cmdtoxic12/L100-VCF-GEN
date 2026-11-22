@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { User, Phone, GraduationCap, CheckCircle2, Loader2, AlertCircle } from 'lucide-react'
-import { supabase } from '../lib/supabase'
 
 export default function Home() {
   const [fullName, setFullName] = useState('')
@@ -8,13 +7,10 @@ export default function Home() {
   const [status, setStatus] = useState('idle') // idle | loading | success | error
   const [errorMsg, setErrorMsg] = useState('')
 
-  const normalizePhone = (phone) =>
-    phone.trim().replace(/\s+/g, '').replace(/^\+233/, '0')
-
   const handleSubmit = async (e) => {
     e.preventDefault()
     const name = fullName.trim()
-    const phone = normalizePhone(whatsapp)
+    const phone = whatsapp.trim()
 
     if (!name || !phone) return
 
@@ -22,48 +18,17 @@ export default function Home() {
     setErrorMsg('')
 
     try {
-      // ── Duplicate check: phone (exact) and name (case-insensitive) ──
-      const [phoneRes, nameRes] = await Promise.all([
-        supabase
-          .from('contacts')
-          .select('id, full_name, whatsapp')
-          .eq('whatsapp', phone)
-          .limit(1),
-        supabase
-          .from('contacts')
-          .select('id, full_name, whatsapp')
-          .ilike('full_name', name)
-          .limit(1),
-      ])
-
-      if (phoneRes.error) throw phoneRes.error
-      if (nameRes.error) throw nameRes.error
-
-      const phoneMatch = phoneRes.data?.[0]
-      const nameMatch = nameRes.data?.[0]
-
-      if (phoneMatch && nameMatch && phoneMatch.id === nameMatch.id) {
-        throw new Error('This name and number are already registered.')
-      }
-      if (phoneMatch) {
-        throw new Error(
-          `This WhatsApp number is already registered under "${phoneMatch.full_name}".`
-        )
-      }
-      if (nameMatch) {
-        throw new Error(
-          `The name "${name}" is already registered with a different number.`
-        )
-      }
-
-      // ── Insert ──
-      const { error } = await supabase.from('contacts').insert({
-        full_name: name,
-        whatsapp: phone,
-        level: 'L100',
+      const res = await fetch('/api/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: name, whatsapp: phone }),
       })
 
-      if (error) throw error
+      const data = await res.json()
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Could not save contact')
+      }
 
       setStatus('success')
       setFullName('')
@@ -71,7 +36,7 @@ export default function Home() {
     } catch (err) {
       console.error(err)
       setStatus('error')
-      setErrorMsg(err.message || 'Could not save. Check Supabase setup.')
+      setErrorMsg(err.message || 'Could not save. Check server / Neon setup.')
     }
   }
 
@@ -99,7 +64,6 @@ export default function Home() {
 
   return (
     <div className="mx-auto max-w-md">
-      {/* Hero */}
       <div className="mb-8 text-center">
         <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-200">
           <GraduationCap size={28} />
@@ -112,10 +76,8 @@ export default function Home() {
         </p>
       </div>
 
-      {/* Form Card */}
       <div className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm sm:p-8">
         <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Full Name */}
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">
               Full Name <span className="text-red-500">*</span>
@@ -133,7 +95,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* WhatsApp */}
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">
               WhatsApp Number <span className="text-red-500">*</span>
@@ -154,7 +115,6 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Level (locked) */}
           <div>
             <label className="mb-1.5 block text-sm font-medium text-slate-700">
               Level
@@ -170,7 +130,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Error */}
           {status === 'error' && (
             <div className="flex items-start gap-2 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -178,7 +137,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Submit */}
           <button
             type="submit"
             disabled={status === 'loading'}

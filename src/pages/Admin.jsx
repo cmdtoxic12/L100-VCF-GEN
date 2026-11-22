@@ -10,7 +10,6 @@ import {
   ShieldAlert,
   Search,
 } from 'lucide-react'
-import { supabase } from '../lib/supabase'
 import { downloadVCF } from '../lib/vcf'
 
 // Simple password gate (change this!)
@@ -30,13 +29,9 @@ export default function Admin() {
     setLoading(true)
     setError('')
     try {
-      const { data, error: err } = await supabase
-        .from('contacts')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(10)
-
-      if (err) throw err
+      const res = await fetch('/api/contacts')
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to load contacts')
       setContacts(data || [])
     } catch (err) {
       console.error(err)
@@ -55,6 +50,7 @@ export default function Admin() {
     if (password === ADMIN_PASSWORD) {
       setAuthenticated(true)
       setPassword('')
+      setError('')
     } else {
       setError('Incorrect password')
     }
@@ -72,15 +68,16 @@ export default function Admin() {
 
   const saveEdit = async (id) => {
     try {
-      const { error: err } = await supabase
-        .from('contacts')
-        .update({
+      const res = await fetch(`/api/contacts/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           full_name: editForm.full_name.trim(),
-          whatsapp: editForm.whatsapp.trim().replace(/\s+/g, ''),
-        })
-        .eq('id', id)
-
-      if (err) throw err
+          whatsapp: editForm.whatsapp.trim(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Update failed')
       setEditingId(null)
       fetchContacts()
     } catch (err) {
@@ -144,7 +141,6 @@ export default function Admin() {
   // ── Dashboard ──
   return (
     <div>
-      {/* Header */}
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Admin Dashboard</h1>
@@ -173,7 +169,6 @@ export default function Admin() {
         </div>
       </div>
 
-      {/* Stats */}
       <div className="mb-6 grid grid-cols-2 gap-3">
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <div className="flex items-center gap-2 text-slate-500">
@@ -195,7 +190,6 @@ export default function Admin() {
         </div>
       </div>
 
-      {/* Search */}
       <div className="relative mb-4">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
         <input
@@ -207,14 +201,12 @@ export default function Admin() {
         />
       </div>
 
-      {/* Error */}
       {error && (
         <div className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
 
-      {/* Table */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {loading && contacts.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-16 text-slate-400">
