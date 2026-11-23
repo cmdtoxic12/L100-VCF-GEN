@@ -14,12 +14,24 @@ export default async function handler(req, res) {
     client=await pool.connect(); await client.query('BEGIN');
     // Serialize registrations so the 350-contact cap cannot be exceeded during concurrent submissions.
     await client.query('SELECT pg_advisory_xact_lock(100350)');
-    const duplicate=await client.query('SELECT id FROM contacts WHERE lower(trim(full_name))=lower(trim($1)) OR phone=$2 LIMIT 1',[name,phone]);
+    const duplicate = await client.query(
+  `SELECT id FROM contacts
+   WHERE lower(trim(full_name)) = lower(trim($1))
+   OR whatsapp = $2
+   LIMIT 1`,
+  [name, phone]
+);
     if (duplicate.rows.length) { await client.query('ROLLBACK'); return json(res,409,{error:'This name or WhatsApp number is already registered.'}); }
     const count=await client.query('SELECT count(*)::int AS count FROM contacts');
     if (count.rows[0].count>=350) { await client.query('ROLLBACK'); return json(res,409,{error:'Registration is full. The 350-contact limit has been reached.'}); }
     const vcfName=`${name} L100`;
-    const result=await client.query('INSERT INTO contacts(full_name,phone,level,vcf_name) VALUES($1,$2,$3,$4) RETURNING id,full_name,phone,level,vcf_name,created_at',[name,phone,'Level 100',vcfName]);
+    const result = await client.query(
+  `INSERT INTO contacts (full_name, whatsapp, level, vcf_name)
+   VALUES ($1, $2, $3, $4)
+   RETURNING id, full_name, whatsapp AS phone,
+   level, vcf_name, created_at`,
+  [name, phone, 'Level 100', vcfName]
+);
     await client.query('COMMIT'); return json(res,201,{message:'Registration successful!',contact:result.rows[0]});
   } catch (e) { if(client) { try { await client.query('ROLLBACK'); } catch {} } if(e.code==='23505') return json(res,409,{error:'This name or WhatsApp number is already registered.'}); console.error('Submit error:',e); return json(res,500,{error:'We could not save your registration. Please try again.'}); }
   finally { if(client) client.release(); }
