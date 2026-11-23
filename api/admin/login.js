@@ -1,51 +1,14 @@
-import {
-  checkPassword,
-  clearAdminCookie,
-  isAdmin,
-  isAuthConfigured,
-  setAdminCookie,
-} from '../_auth.js'
-import { clientKey, methodNotAllowed, parseBody, sendError } from '../_http.js'
-import { rateLimit } from '../_rate-limit.js'
-
-export default function handler(req, res) {
-  res.setHeader('Cache-Control', 'no-store')
-
-  if (req.method === 'GET') {
-    return res.status(200).json({
-      authenticated: isAdmin(req),
-      configured: isAuthConfigured(),
-    })
-  }
-
-  if (req.method === 'POST') {
-    if (!isAuthConfigured()) {
-      return sendError(
-        res,
-        503,
-        'Admin access is not configured. Set ADMIN_PASSWORD and ADMIN_SECRET.',
-      )
-    }
-
-    if (!rateLimit(`login:${clientKey(req)}`, 10, 5 * 60_000)) {
-      return sendError(res, 429, 'Too many attempts. Please try again in a few minutes.')
-    }
-
-    const body = parseBody(req)
-    if (!body) return sendError(res, 400, 'Invalid request body.')
-
-    if (!checkPassword(body.password)) {
-      return sendError(res, 401, 'Incorrect password.')
-    }
-
-    setAdminCookie(res)
-    return res.status(200).json({ ok: true })
-  }
-
-  if (req.method === 'DELETE') {
-    clearAdminCookie(res)
-    return res.status(200).json({ ok: true })
-  }
-
-  return methodNotAllowed(res, ['GET', 'POST', 'DELETE'])
+import { getPool } from '../_lib/db.js';
+import { json, method, clientKey, rateLimit, originCheck } from '../_lib/http.js';
+import { createSession, setSessionCookie } from '../_lib/auth.js';
+import { timingSafeEqual, createHash } from 'node:crypto';
+function safeEqual(a,b) { const x=createHash('sha256').update(String(a)).digest(); const y=createHash('sha256').update(String(b)).digest(); return timingSafeEqual(x,y); }
+export default async function handler(req,res) {
+  if (!method(req,res,['POST'])) return;
+  if (!originCheck(req)) return json(res,403,{error:'Request not allowed'});
+  try { const pool=getPool(); if(!await rateLimit(pool,`login:${clientKey(req)}`,8,15)) return json(res,429,{error:'Too many login attempts. Wait and try again.'});
+    const username=String(req.body?.username||''); const password=String(req.body?.password||'');
+    if(!process.env.ADMIN_USERNAME||!process.env.ADMIN_PASSWORD||!safeEqual(username,process.env.ADMIN_USERNAME)||!safeEqual(password,process.env.ADMIN_PASSWORD)) return json(res,401,{error:'Invalid username or password.'});
+    const token=await createSession(username); setSessionCookie(res,token); return json(res,200,{ok:true});
+  } catch(e) { console.error('Login error:',e); return json(res,500,{error:'Admin login is not configured correctly.'}); }
 }

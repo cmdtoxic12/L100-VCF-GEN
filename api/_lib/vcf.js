@@ -1,0 +1,3 @@
+function esc(s = '') { return String(s).replace(/\\/g,'\\\\').replace(/\n/g,'\\n').replace(/,/g,'\\,').replace(/;/g,'\\;'); }
+function fold(line) { const chunks=[]; let current=''; let bytes=0; for (const char of line) { const size=Buffer.byteLength(char,'utf8'); if (bytes + size > 75) { chunks.push(current); current=' '; bytes=1; } current += char; bytes += size; } if (current) chunks.push(current); return chunks.join('\r\n'); }
+export function createVcf(rows) { return rows.map(c => { const displayName = c.vcf_name || `${c.full_name} L100`; return ['BEGIN:VCARD','VERSION:3.0',`FN:${esc(displayName)}`,`N:;${esc(displayName)};;;`,`TEL;TYPE=CELL:${c.phone}`,'END:VCARD'].map(fold).join('\r\n'); }).join('\r\n') + (rows.length ? '\r\n' : ''); }
